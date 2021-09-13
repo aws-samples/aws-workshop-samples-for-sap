@@ -1,0 +1,323 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Create a VPC with two public subnets, and may optionally create two private subnets 
+  and a NAT Gateway (derived from AWS Quickstart for SAP HANA on AWS template).
+  **What it creates**
+  A VPC with 2 public subnets and Internet Gateway. Depending on the parameters set, it may also
+  create 2 private subnets, and a NAT Gateway.
+  **WARNING** This template primarily creates VPC related resources that do not cause additional
+  billing, but may create a NAT Gateway depending on the parameters you provide. You will be billed
+  for the NAT Gateway once the stack is deployed. Delete this stack after you have completed your
+  tasks to avoid additional charges.
+  **WARNING** This template is designed for use in a workshop environment. While it may be used
+  for productive workloads, additional security reviews and hardening of the resources created
+  is recommended.'
+Metadata:
+  License: MIT-0
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Base Configuration
+      Parameters:
+      - VPCNAME
+      - AvailabilityZones
+      - VPCCIDR
+    - Label:
+        default: Public Subnet Configuration
+      Parameters:
+      - PublicSubnet1CIDR
+      - PublicSubnet2CIDR
+    - Label:
+        default: Private Subnet Configuration
+      Parameters:
+      - CreatePrivateType
+      - PrivateSubnet1CIDR
+      - PrivateSubnet2CIDR
+    ParameterLabels:
+      AvailabilityZones:
+        default: Availability Zones
+      CreatePrivateType:
+        default: Type of private subnet setup
+      PrivateSubnet1CIDR:
+        default: Private subnet 1 CIDR
+      PrivateSubnet2CIDR:
+        default: Private subnet 2 CIDR
+      PublicSubnet1CIDR:
+        default: Public subnet 1 CIDR
+      PublicSubnet2CIDR:
+        default: Public subnet 2 CIDR
+      VPCCIDR:
+        default: VPC CIDR
+      VPCNAME:
+        default: VPC name
+Parameters:
+  AvailabilityZones:
+    Description: 'List of Availability Zones to use for the subnets in the VPC. Note:
+      The logical order is preserved.'
+    Type: List<AWS::EC2::AvailabilityZone::Name>
+  CreatePrivateType:
+    Type: String
+    Description: Do you want public and private subnets, and should they have NAT Gateways?
+    Default: 'Public subnets only'
+    AllowedValues:
+      - 'Both subnet types'
+      - 'Both subnet types with NAT Gateway'
+      - 'Public subnets only'
+  PrivateSubnet1CIDR:
+    Default: 172.16.2.0/24
+    Description: CIDR block for private subnet 1 located in Availability Zone 1
+    Type: String
+  PrivateSubnet2CIDR:
+    Default: 172.16.3.0/24
+    Description: CIDR block for private subnet 2 located in Availability Zone 2
+    Type: String
+  PublicSubnet1CIDR:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 172.16.0.0/24
+    Description: CIDR block for the public DMZ subnet 1 located in Availability Zone 1
+    Type: String
+  PublicSubnet2CIDR:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 172.16.1.0/24
+    Description: CIDR block for the public DMZ subnet 2 located in Availability Zone 2
+    Type: String
+  VPCCIDR:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 172.16.0.0/20
+    Description: CIDR block for the VPC
+    Type: String
+  VPCNAME:
+    Default: RD VPC
+    Description: Name for the VPC, will be used with multiple VPC resources
+    Type: String
+    MinLength: 2
+Conditions:
+  NVirginiaRegionCondition:
+    Fn::Equals:
+    - Ref: AWS::Region
+    - us-east-1
+  CreateNatGatewayCondition:
+    !Equals [!Ref CreatePrivateType, 'Both subnet types with NAT Gateway']
+  CreatePrivateCondition:
+    !Or [!Equals [!Ref CreatePrivateType, 'Both subnet types'], Condition: CreateNatGatewayCondition]
+Resources:
+  DHCPOptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName:
+        Fn::If:
+        - NVirginiaRegionCondition
+        - ec2.internal
+        - Fn::Join:
+          - ''
+          - - Ref: AWS::Region
+            - .compute.internal
+      DomainNameServers:
+      - AmazonProvidedDNS
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:
+        Ref: VPCCIDR
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: Name
+        Value:
+          Ref: VPCNAME
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W60
+            reason: "This is a lightweight vpc for use in a workshop, so flow logs are not in use."
+  VPCDHCPOptionsAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId:
+        Ref: VPC
+      DhcpOptionsId:
+        Ref: DHCPOptions
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value:
+          Ref: VPCNAME
+      - Key: Network
+        Value: Public
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: VPC
+      InternetGatewayId:
+        Ref: InternetGateway
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: CreatePrivateCondition
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock:
+        Ref: PrivateSubnet1CIDR
+      AvailabilityZone: !Select [ 0, Ref: AvailabilityZones ]
+      Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref VPCNAME, "private 1" ] ]
+      - Key: Network
+        Value: Private
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreatePrivateCondition
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock:
+        Ref: PrivateSubnet2CIDR
+      AvailabilityZone: !Select [ 1, Ref: AvailabilityZones ]
+      Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref VPCNAME, "private 2" ] ]
+      - Key: Network
+        Value: Private
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock:
+        Ref: PublicSubnet1CIDR
+      AvailabilityZone: !Select [ 0, Ref: AvailabilityZones ]
+      Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref VPCNAME, "public 1" ] ]
+      - Key: Network
+        Value: Public
+      MapPublicIpOnLaunch: false
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock:
+        Ref: PublicSubnet2CIDR
+      AvailabilityZone: !Select [ 1, Ref: AvailabilityZones ]
+      Tags:
+      - Key: Name
+        Value: !Join [ " ", [ !Ref VPCNAME, "public 2" ] ]
+      - Key: Network
+        Value: Public
+      MapPublicIpOnLaunch: false
+  NATEIP:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::EIP
+    Condition: CreateNatGatewayCondition
+    Properties:
+      Domain: vpc
+  NATGateway:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Condition: CreateNatGatewayCondition
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - NATEIP
+        - AllocationId
+      SubnetId:
+        Ref: PublicSubnet1
+  PrivateSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreatePrivateCondition
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Name
+        Value: Private subnet route table
+      - Key: Network
+        Value: Private
+  PublicSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Name
+        Value: Public subnet route table
+      - Key: Network
+        Value: Public
+  AddRouteToIGW:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+      RouteTableId:
+        Ref: PublicSubnetRouteTable
+  PrivateSubnetRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateNatGatewayCondition
+    Properties:
+      RouteTableId:
+        Ref: PrivateSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NATGateway
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNatGatewayCondition
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnet1
+      RouteTableId:
+        Ref: PrivateSubnetRouteTable
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNatGatewayCondition
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnet2
+      RouteTableId:
+        Ref: PrivateSubnetRouteTable
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PublicSubnet1
+      RouteTableId:
+        Ref: PublicSubnetRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PublicSubnet2
+      RouteTableId:
+        Ref: PublicSubnetRouteTable
+Outputs:
+  TemplateID:
+    Value: basis-advanced-workshop/vpc-template-hana
+  VpcNameOutput:
+    Value:
+      Ref: VPCNAME
+    Description: VPC Name
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-VPCNAME
+  VpcCidrOutput:
+    Value:
+      Ref: VPCCIDR
+    Description: VPC CIDR
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-VPCCIDR
+  VpcIdOutput:
+    Value:
+      Ref: VPC
+    Description: VPC ID
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-VPCID

@@ -1,0 +1,213 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Public facing remote desktop EC2 instance for HANA Advanced workshop (derived
+  from Service Catalog: EC2 Reference Architecture(fdp-1qj64b3g2)). Converted from JSON. Used 
+  for Internet-based software downloads and remote access to instances in private subnets that
+  require a GUI based client or web browser based access.
+  **What it creates**
+  a public subnet based EC2 instance with a public IP address, based on Microsoft 
+  Windows Server, with associated EBS storage and security group.
+  **WARNING** This template creates an Amazon EC2 instance and related resources, and you will
+  be billed for it once the stack is deployed.  Delete the stack once you have completed to
+  avoid additional charges.
+  **WARNING** This template is designed for use in a workshop environment. While it may be used
+  for productive workloads, additional security reviews and hardening of the resources created
+  is recommended.'
+Metadata:
+  License: MIT-0
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: General Configuration
+        Parameters:
+          - VPC
+          - KeyPair
+          - RemoteAccessCIDR
+      - Label:
+          default: Windows Instance Configuration
+        Parameters:
+          - WindowsInstanceType
+          - WindowsSubnet
+          - WindowsRDPPort
+          - LatestAmiId
+    ParameterLabels:
+      VPC:
+        default: VPC
+      KeyPair:
+        default: Key Pair
+      RemoteAccessCIDR:
+        default: Remote Access CIDR Block
+      WindowsInstanceType:
+        default: Windows Instance Type
+      WindowsSubnet:
+        default: Windows Subnet
+      WindowsRDPPort:
+        default: Windows RDP Port
+      LatestAmiId:
+        default: SSM path for latest Windows AMI ImageId
+Parameters:
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: Select the VPC where the EC2 instances will be created
+    ConstraintDescription: must be an existing VPC
+  WindowsSubnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select the public subnet for the Remote Desktop EC2 instance
+    ConstraintDescription: must be an existing public subnet
+  RemoteAccessCIDR:
+    Description: CIDR block to allow access to windows instances
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  WindowsInstanceType:
+    AllowedValues:
+      - t3a.medium
+      - t3.medium
+      - c5a.large
+      - c5.large
+    Default: t3a.medium
+    Description: Amazon EC2 Windows Instance Type
+    Type: String
+  WindowsRDPPort:
+    Description: Windows RDP Port Number
+    Type: Number
+    Default: 3389
+    MinValue: 1025
+    MaxValue: 65535
+    ConstraintDescription: must be a number from 1025 to 65535
+  KeyPair:
+    Description: Name of existing EC2 key pair for Windows Instances
+    Type: AWS::EC2::KeyPair::KeyName
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-windows-latest/Windows_Server-2019-English-Full-Base
+Resources:
+  MediaDownloadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  MediaDownloadProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'MediaDownloadRole'
+  WindowsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enables SSH Access to Windows EC2 Instance
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+        - Description: allow RDP
+          IpProtocol: tcp
+          FromPort: !Ref 'WindowsRDPPort'
+          ToPort: !Ref 'WindowsRDPPort'
+          CidrIp: !Ref 'RemoteAccessCIDR'
+      SecurityGroupEgress:
+        - Description: allow all outgoing
+          IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: "This will access multiple resources in different vpcs, so open egress is needed."
+          - id: W40
+            reason: "This will access multiple resources in different vpcs, so detailed guidance on egress rules is not available."
+  WindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref 'LatestAmiId'
+      InstanceType: !Ref 'WindowsInstanceType'
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref 'WindowsSecurityGroup'
+          SubnetId: !Ref 'WindowsSubnet'
+      KeyName: !Ref 'KeyPair'
+      IamInstanceProfile: !Ref 'MediaDownloadProfile'
+      Tags:
+        - Key: Name
+          Value: Remote Desktop
+        - Key: Description
+          Value: Remote desktop instance for downloading media and remote clients
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            Encrypted: 'false'
+            VolumeSize: '50'
+            DeleteOnTermination: 'true'
+      UserData: !Base64 |
+        <powershell>
+        echo "START"
+        $ErrorActionPreference = "Stop"
+        $mypath = "c:/tools"
+        If(!(test-path $mypath))
+        {
+        New-Item -ItemType Directory -Force -Path $mypath
+        }
+        cd $mypath
+        #
+        echo "Downloading Amazon Corretto 11..."
+        $url = "https://corretto.aws/downloads/latest/amazon-corretto-11-x64-windows-jdk.msi"
+        $output = $mypath+"/amazon-corretto-11-x64-windows-jdk.msi"
+        (New-Object System.Net.WebClient).DownloadFile($url, $output)
+        echo "...done!"
+        #
+        echo "Installing Amazon Corretto 11..."
+        .\amazon-corretto-11-x64-windows-jdk.msi /qn /L* "install.log" /norestart ALLUSERS=2
+        echo "...done."
+        echo "Sleep 60s"
+        sleep 60
+        #
+        echo "Downloading Firefox..."
+        $url2 = "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=en-US"
+        $output2 = $mypath+"/firefox.msi"
+        (New-Object System.Net.WebClient).DownloadFile($url2, $output2)
+        echo "...done."
+        #
+        echo "Installing Firefox..."
+        .\firefox.msi /quiet
+        sleep 60
+        echo "...done."
+        </powershell>
+Outputs:
+  TemplateID:
+    Value: basis-advanced-workshop/remote-desktop-template
+  WindowsInstancePublicIpAddress:
+    Value: !GetAtt 'WindowsInstance.PublicIp'
+  WindowsInstancePrivateIpAddress:
+    Value: !GetAtt 'WindowsInstance.PrivateIp'
+  WindowsInstanceAvailabilityZone:
+    Value: !GetAtt 'WindowsInstance.AvailabilityZone'
+  WindowsInstanceId:
+    Value: !Ref 'WindowsInstance'
+  KeyPair:
+    Value: !Ref 'KeyPair'
+  WindowsSubnet:
+    Value: !Ref 'WindowsSubnet'
+  WindowsInstanceType:
+    Value: !Ref 'WindowsInstanceType'
+  WindowsRDPPort:
+    Value: !Ref 'WindowsRDPPort'
+  RemoteAccessCIDR:
+    Value: !Ref 'RemoteAccessCIDR'
+  VPC:
+    Value: !Ref 'VPC'
+  IAMMediaDownloadRole:
+    Value: !Ref 'MediaDownloadRole'
